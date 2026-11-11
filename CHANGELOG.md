@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `All` and `GetMap` return deep copies; `GetStringSlice` copies `[]string` values.
+- Documented BindEnv resolution, concurrency, and flat XML limitations.
+
+### Added
+- `LookupString`, `LookupInt`, `LookupBool` with `ErrNotFound` / `ErrTypeMismatch`.
+- Nil-safe `Merge`.
+
+
 ## [0.1.0] - 2026-11-11
 
 ### Added

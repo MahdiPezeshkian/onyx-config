@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,7 +20,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ErrNotFound is returned by Lookup* helpers when a key is absent or nil.
+var ErrNotFound = errors.New("config: key not found")
+
+// ErrTypeMismatch is returned by Lookup* helpers when a value cannot be
+// converted to the requested type.
+var ErrTypeMismatch = errors.New("config: type mismatch")
+
 // Config holds all configuration data as a nested map.
+//
+// Concurrency: Config is NOT safe for concurrent use. Callers that share a
+// Config across goroutines must provide their own synchronization.
 type Config struct {
 	data map[string]interface{}
 }
@@ -85,7 +96,11 @@ func (c *Config) LoadFiles(paths ...string) error {
 }
 
 // Merge merges another Config into this one. The other Config's values take precedence.
+// A nil other is a no-op.
 func (c *Config) Merge(other *Config) {
+	if other == nil {
+		return
+	}
 	c.mergeMap(other.data)
 }
 
@@ -164,6 +179,10 @@ func (c *Config) GetString(key string, fallback ...string) string {
 }
 
 // GetInt returns the value as int64, or fallback if not found.
+//
+// Compatibility note: if the key exists but cannot be converted, GetInt returns
+// 0 (or the fallback is NOT used). Prefer LookupInt when you need to distinguish
+// missing keys from conversion failures.
 func (c *Config) GetInt(key string, fallback ...int64) int64 {
 	val := c.Get(key)
 	if val == nil {
@@ -186,6 +205,63 @@ func (c *Config) GetInt(key string, fallback ...int64) int64 {
 		}
 	}
 	return 0
+}
+
+// LookupInt returns the int64 value for key, or ErrNotFound / ErrTypeMismatch.
+func (c *Config) LookupInt(key string) (int64, error) {
+	val := c.Get(key)
+	if val == nil {
+		return 0, fmt.Errorf("%w: %s", ErrNotFound, key)
+	}
+	switch v := val.(type) {
+	case int:
+		return int64(v), nil
+	case int64:
+		return v, nil
+	case float64:
+		return int64(v), nil
+	case string:
+		i, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%w: %s", ErrTypeMismatch, key)
+		}
+		return i, nil
+	default:
+		return 0, fmt.Errorf("%w: %s", ErrTypeMismatch, key)
+	}
+}
+
+// LookupString returns the string value for key, or ErrNotFound.
+// Non-string values are stringified (same as GetString) and returned successfully.
+func (c *Config) LookupString(key string) (string, error) {
+	val := c.Get(key)
+	if val == nil {
+		return "", fmt.Errorf("%w: %s", ErrNotFound, key)
+	}
+	s, ok := val.(string)
+	if !ok {
+		return fmt.Sprintf("%v", val), nil
+	}
+	return s, nil
+}
+
+// LookupBool returns the bool value for key, or ErrNotFound / ErrTypeMismatch.
+func (c *Config) LookupBool(key string) (bool, error) {
+	val := c.Get(key)
+	if val == nil {
+		return false, fmt.Errorf("%w: %s", ErrNotFound, key)
+	}
+	if b, ok := val.(bool); ok {
+		return b, nil
+	}
+	if s, ok := val.(string); ok {
+		b, err := strconv.ParseBool(s)
+		if err != nil {
+			return false, fmt.Errorf("%w: %s", ErrTypeMismatch, key)
+		}
+		return b, nil
+	}
+	return false, fmt.Errorf("%w: %s", ErrTypeMismatch, key)
 }
 
 // GetBool returns the value as bool, or fallback if not found.
@@ -280,7 +356,9 @@ func (c *Config) GetStringSlice(key string, fallback ...[]string) []string {
 		}
 		return result
 	case []string:
-		return v
+		result := make([]string, len(v))
+		copy(result, v)
+		return result
 	case string:
 		parts := strings.Split(v, ",")
 		for i, p := range parts {
@@ -291,7 +369,8 @@ func (c *Config) GetStringSlice(key string, fallback ...[]string) []string {
 	return []string{}
 }
 
-// GetMap returns the value as map[string]interface{}, or nil if not found.
+// GetMap returns a deep copy of the nested map at key, or nil if not found /
+// not a map. Mutating the result does not affect the Config.
 func (c *Config) GetMap(key string) map[string]interface{} {
 	val := c.Get(key)
 	if val == nil {
@@ -301,12 +380,13 @@ func (c *Config) GetMap(key string) map[string]interface{} {
 	if !ok {
 		return nil
 	}
-	return m
+	return cloneMap(m)
 }
 
-// All returns the entire configuration map.
+// All returns a deep copy of the entire configuration map.
+// Mutating the result does not affect the Config.
 func (c *Config) All() map[string]interface{} {
-	return c.data
+	return cloneMap(c.data)
 }
 
 // BindEnv loads environment variables with an optional prefix into the config.
@@ -513,5 +593,35 @@ func toFloat64(v interface{}) float64 {
 		return float64(n)
 	default:
 		return 0
+	}
+}
+
+func cloneMap(src map[string]interface{}) map[string]interface{} {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]interface{}, len(src))
+	for k, v := range src {
+		dst[k] = cloneValue(v)
+	}
+	return dst
+}
+
+func cloneValue(v interface{}) interface{} {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		return cloneMap(t)
+	case []interface{}:
+		out := make([]interface{}, len(t))
+		for i := range t {
+			out[i] = cloneValue(t[i])
+		}
+		return out
+	case []string:
+		out := make([]string, len(t))
+		copy(out, t)
+		return out
+	default:
+		return v
 	}
 }
