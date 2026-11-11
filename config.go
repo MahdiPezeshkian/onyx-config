@@ -494,11 +494,21 @@ func parseJSON(r io.Reader) (map[string]interface{}, error) {
 }
 
 func parseXML(r io.Reader) (map[string]interface{}, error) {
-	return parseXMLToMap(r)
+	flat, err := parseXMLToFlatMap(r)
+	if err != nil {
+		return nil, err
+	}
+	// Convert dotted flat keys into nested maps so Get("app.port") works.
+	nested := New()
+	for k, v := range flat {
+		nested.Set(k, v)
+	}
+	return nested.data, nil
 }
 
-// parseXMLToMap is a simple XML-to-map converter.
-func parseXMLToMap(r io.Reader) (map[string]interface{}, error) {
+// parseXMLToFlatMap is a simple XML extractor: element paths and attributes
+// become dotted keys. It is not a general nested XML document model.
+func parseXMLToFlatMap(r io.Reader) (map[string]interface{}, error) {
 	dec := xml.NewDecoder(r)
 	result := make(map[string]interface{})
 	var currentKey string
@@ -523,12 +533,17 @@ func parseXMLToMap(r io.Reader) (map[string]interface{}, error) {
 				result[key] = attr.Value
 			}
 		case xml.EndElement:
-			if len(stack) > 0 {
-				stack = stack[:len(stack)-1]
-			}
 			if currentValue.Len() > 0 {
 				result[currentKey] = currentValue.String()
 				currentValue.Reset()
+			}
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+			if len(stack) > 0 {
+				currentKey = strings.Join(stack, ".")
+			} else {
+				currentKey = ""
 			}
 		case xml.CharData:
 			text := strings.TrimSpace(string(se))

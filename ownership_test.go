@@ -76,7 +76,7 @@ func TestXMLFlatLimitation(t *testing.T) {
 	if cfg.GetString("app.name") != "onyx" {
 		t.Fatalf("text: %v", cfg.Get("app.name"))
 	}
-	if cfg.GetMap("app") != nil {
-		t.Fatal("flat XML must not create nested maps for elements")
+	if cfg.GetMap("app") == nil {
+		t.Fatal("dotted XML keys are nested for Get compatibility")
 	}
 }
